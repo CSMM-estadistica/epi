@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sistema de Vigilancia Epidemiológica</title>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+:root{--az:#0b4f8a;--az2:#083a66;--bg:#eef2f7;--tx:#1e293b;--mut:#64748b;--ok:#15803d;--err:#b91c1c}
+*{box-sizing:border-box}body{margin:0;font-family:Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--tx)}
+header{background:linear-gradient(90deg,var(--az2),var(--az));color:#fff;padding:14px 24px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between}
+header h1{margin:0;font-size:1.25rem;letter-spacing:.5px}header p{margin:2px 0 0;font-size:.85rem;opacity:.85}
+.wrap{max-width:1200px;margin:0 auto;padding:16px}
+.btn{background:var(--az);color:#fff;border:0;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:.85rem}
+.btn:hover{background:var(--az2)}.btn.alt{background:#fff;color:var(--az);border:1px solid var(--az)}
+.card{background:#fff;border-radius:10px;box-shadow:0 1px 4px #0002;padding:16px;margin-bottom:16px}
+#drop{border:3px dashed #94a3b8;text-align:center;padding:28px;cursor:pointer;background:#fff;border-radius:10px;margin-bottom:16px}
+#drop.over{border-color:var(--az);background:#e0efff}#drop h2{margin:0 0 6px;color:var(--az)}
+.info{display:flex;flex-wrap:wrap;gap:8px 24px;font-size:.9rem;margin-top:10px;justify-content:center}
+nav{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:16px}
+nav button{border:0;background:#fff;padding:9px 14px;border-radius:6px;cursor:pointer;font-size:.9rem;color:var(--tx);box-shadow:0 1px 2px #0002}
+nav button.on{background:var(--az);color:#fff}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+.kpi{background:#fff;border-left:6px solid var(--az);border-radius:8px;padding:14px;box-shadow:0 1px 4px #0002;cursor:pointer}
+.kpi b{display:block;font-size:.8rem;color:var(--mut)}.kpi span{font-size:2rem;font-weight:700;color:var(--az)}.kpi small{color:var(--mut)}
+table{border-collapse:collapse;width:100%;font-size:.9rem}th{background:var(--az);color:#fff;text-align:left;padding:8px}
+td{padding:7px 8px;border-bottom:1px solid #e2e8f0}td.n,th.n{text-align:right}tr.tot td{font-weight:700;background:#e8eff8}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}.tw{overflow-x:auto;max-height:520px}
+.err{background:#fef2f2;border:1px solid var(--err);color:var(--err);padding:14px;border-radius:8px;white-space:pre-line}
+.ok{color:var(--ok)}.bad{color:var(--err)}.note{font-size:.8rem;color:var(--mut)}
+.big{font-size:3.5rem;font-weight:800;color:var(--az)}select{padding:7px;border-radius:6px;border:1px solid #cbd5e1}
+footer{text-align:center;font-size:.8rem;color:var(--mut);padding:12px}
+@media print{header .btn,#drop,nav,.noprint{display:none!important}body{background:#fff}.card{box-shadow:none}}
+</style>
+</head>
+<body>
+<header>
+  <div><h1>SISTEMA DE VIGILANCIA EPIDEMIOLÓGICA</h1><p>Procesamiento de casos por grupo de edad</p></div>
+  <div class="noprint">
+    <button class="btn alt" onclick="exportExcel()">Exportar Excel</button>
+    <button class="btn alt" onclick="exportCSV()">Exportar CSV</button>
+    <button class="btn alt" onclick="window.print()">Imprimir reporte</button>
+    <button class="btn alt" onclick="window.print()" title="En el diálogo elija 'Guardar como PDF'">Exportar PDF</button>
+    <button class="btn" onclick="runTests()">Ejecutar prueba del sistema</button>
+  </div>
+</header>
+<div class="wrap">
+  <div id="drop">
+    <h2>ARRASTRA TU ARCHIVO CSV AQUÍ</h2><div>o</div><br>
+    <button class="btn" onclick="event.stopPropagation();fi.click()">Seleccionar archivo</button>
+    <input type="file" id="fi" accept=".csv,.txt" hidden>
+    <div class="info" id="finfo"></div>
+    <div class="note" style="margin-top:8px">Los datos cargados son procesados localmente en este navegador. No se envían a ningún servidor.</div>
+  </div>
+  <div id="msg"></div>
+  <div id="test"></div>
+  <nav id="nav"></nav>
+  <div id="view"><div class="card">Cargue un archivo CSV para generar los reportes.</div></div>
+</div>
+<footer>SIVE · Cálculo local en memoria del navegador · No se guarda ni transmite información de pacientes</footer>
+
+<script>
+/* =====================================================================
+   NOTAS METODOLÓGICAS (validación matemática)
+   ¿Por qué COUNT DISTINCT? Cada fila del CSV es una ATENCIÓN/diagnóstico, no una persona.
+     El indicador mide personas: un paciente con 5 atenciones J069 es 1 caso, no 5.
+   ¿Por qué deduplicar DESPUÉS del filtro? Un paciente puede tener J069 (IRA) y A09X (EDA):
+     cuenta 1 vez en cada indicador, pero nunca 2 veces dentro del mismo.
+   ¿Cómo se calcula la edad? Anio/Mes/Dia_Actual_Paciente son la edad en años, meses y días
+     (NO una fecha). Edad total en meses tm = años*12 + meses. Los días quedan como dato
+     de detalle: todos los límites de los grupos caen en meses completos (2 m, 12 m, 60 m...),
+     por lo que 0a 1m 29d => tm=1 (<2 meses) y 0a 2m 0d => tm=2 (2-11 meses).
+   ¿Cómo se determinan los límites? Cada grupo es un intervalo semiabierto [lo, hi) en meses:
+     incluye el límite inferior y excluye el superior. Los intervalos son contiguos y disjuntos,
+     así un paciente cae en EXACTAMENTE un grupo.
+   ¿Cómo se evita que un paciente caiga en dos grupos? (a) intervalos [lo,hi) disjuntos;
+     (b) cada Id_Paciente se asigna a UNA sola edad (ver generateReport).
+   INTERPRETACIONES DOCUMENTADAS:
+   1) ASMA: se usan los rangos tal como fueron pedidos: (0-1 años) = <2 años, (1-4 años) = >=2 y <5 años,
+      (5+) = >=5. La etiqueta "1-4" se mantiene aunque el rango real empieza en 2 años.
+   2) Si un mismo paciente aparece con edades distintas en el mismo indicador, se usa el PRIMER
+      registro con edad válida (orden del archivo). Los pacientes sin ninguna edad válida se muestran
+      en la fila "Edad inválida / vacía" y se incluyen en el TOTAL.
+   3) Edad inválida: vacía, no numérica, negativa, meses >11, días >31 o años >120.
+   4) Los registros sin Id_Paciente válido nunca cuentan como paciente.
+   ===================================================================== */
+
+const REQ=['Id_Paciente','Codigo_Item','Tipo_Diagnostico','Anio_Actual_Paciente','Mes_Actual_Paciente','Dia_Actual_Paciente'];
+const NULLS=['','NULL','NAN','NA','N/A','NONE','UNDEFINED'];
+const S={file:'',rows:[],R:null,qc:[],view:'dash',dfilter:'todos'};
+let charts=[];
+
+/* ---------- 2. Normalización ---------- */
+const clean=v=>String(v==null?'':v).trim();
+const isNull=v=>NULLS.includes(clean(v).toUpperCase());
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function toInt(v){const s=clean(v).replace(',','.');return(isNull(s)||!/^\d+(\.0+)?$/.test(s))?null:parseInt(s,10);}
+function normalizeRows(data,c){
+  return data.map((o,i)=>({
+    n:i+2,
+    cita:isNull(o[c.Id_Cita])?'':clean(o[c.Id_Cita]),
+    id:isNull(o[c.Id_Paciente])?'':clean(o[c.Id_Paciente]),
+    code:isNull(o[c.Codigo_Item])?'':clean(o[c.Codigo_Item]).toUpperCase(),
+    tipo:isNull(o[c.Tipo_Diagnostico])?'':clean(o[c.Tipo_Diagnostico]).toUpperCase(),
+    ay:clean(o[c.Anio_Actual_Paciente]),am:clean(o[c.Mes_Actual_Paciente]),ad:clean(o[c.Dia_Actual_Paciente]),
+    age:calculateAge(o[c.Anio_Actual_Paciente],o[c.Mes_Actual_Paciente],o[c.Dia_Actual_Paciente])
+  }));
+}
+
+/* ---------- 3. Cálculo de edad ---------- */
+function calculateAge(y,m,d){
+  const Y=toInt(y),M=toInt(m),D=toInt(d);
+  if(Y===null||M===null||D===null||M>11||D>31||Y>120)return null;
+  return{y:Y,m:M,d:D,tm:Y*12+M};
+}
+const ageText=a=>a?`${a.y}a ${a.m}m ${a.d}d`:'inválida';
+
+/* ---------- 4. Clasificación de edad: intervalos [lo,hi) en meses ---------- */
+const G=(l,lo,hi)=>({l,lo:lo*12,hi:hi*12});
+const M2=(l,lo,hi)=>({l,lo,hi});
+const INF=Infinity;
+const SEG={
+ ira:[M2('Menor 2 meses',0,2),M2('De 2-11 meses',2,12),G('De 1-4 años',1,5),G('De 5-9 años',5,10),G('De 10-19 años',10,20),G('De 20-59 años',20,60),G('De 60 + años',60,INF)],
+ asma:[G('Asma (0-1 años)',0,2),G('Asma (1-4 años)',2,5),G('Asma (5+ años)',5,INF)],
+ eda:[G('Menor 1 Año',0,1),G('De 1-4 Años',1,5),G('De 5-11 Años',5,12),G('De 12-17 Años',12,18),G('De 18-29 Años',18,30),G('De 30-59 Años',30,60),G('De 60 Años a más',60,INF)],
+ feb:[G('< 1 AÑO',0,1),G('1 - 4 AÑOS',1,5),G('5 - 9 AÑOS',5,10),G('10 - 19 AÑOS',10,20),G('20 - 59 AÑOS',20,60),G('60 + AÑOS',60,INF)],
+ dog:[G('< 1 AÑO',0,1),G('1 - 4 AÑOS',1,5),G('5 - 11 AÑOS',5,12),G('12 - 17 AÑOS',12,18),G('18 - 29 AÑOS',18,30),G('30 - 59 AÑOS',30,60),G('60 A + AÑOS',60,INF)]
+};
+function getAgeSegment(age,segs){
+  if(!age||!segs)return -1;
+  return segs.findIndex(s=>age.tm>=s.lo&&age.tm<s.hi);
+}
+
+/* ---------- 5. Filtros epidemiológicos (se aplican sobre código normalizado) ---------- */
+const filterIRA=r=>r.code.startsWith('J')&&r.code!=='J456';
+const filterAsma=r=>r.code==='J456';
+const filterEDA=r=>r.code==='A09X';
+const filterFebriles=r=>r.code==='R509';
+const filterDengue=r=>r.code.startsWith('A97');
+const filterDogBite=r=>r.code.startsWith('W54');
+const IND=[
+ {k:'ira',nav:'IRA',t:'IRA — Infecciones Respiratorias Agudas',f:filterIRA,segs:SEG.ira},
+ {k:'asma',nav:'Asma',t:'ASMA',f:filterAsma,segs:SEG.asma},
+ {k:'eda',nav:'EDA',t:'EDA — Enfermedad Diarreica Aguda',f:filterEDA,segs:SEG.eda},
+ {k:'feb',nav:'Febriles',t:'FEBRILES',f:filterFebriles,segs:SEG.feb},
+ {k:'dengue',nav:'Dengue',t:'DENGUE',f:filterDengue,segs:null},
+ {k:'dog',nav:'Mordedura Canina',t:'MORDEDURA CANINA',f:filterDogBite,segs:SEG.dog}
+];
+
+/* ---------- 6. Deduplicación ---------- */
+function countUniquePatients(records){
+  const s=new Set();
+  records.forEach(r=>{if(r.id)s.add(r.id);});
+  return s.size;
+}
+
+/* TOTAL DE ATENCIONES = COUNT(DISTINCT Id_Cita) sobre TODO el archivo (sin filtro de diagnóstico ni de tipo).
+   Una cita puede tener varias filas (un diagnóstico por fila), por eso se cuentan citas únicas y no registros.
+   Las filas con Id_Cita vacío/NULL/NaN no cuentan. Si el CSV no trae la columna Id_Cita, se muestra "N/D". */
+function countUniqueCitas(rows){
+  const s=new Set();
+  rows.forEach(r=>{if(r.cita)s.add(r.cita);});
+  return s.size;
+}
+const citaTxt=()=>S.hasCita?countUniqueCitas(S.rows).toLocaleString():'N/D';
+
+/* Hook para futuro filtro por fecha (Fecha desde / hasta): si el CSV trae una columna de fecha de
+   atención, basta implementar aquí el filtrado; el resto del pipeline no cambia. */
+function applyDateFilter(rows,desde,hasta){return rows;}
+
+/* ---------- 7. Cálculo de indicadores ---------- */
+function generateReport(rows,ind){
+  // 1) filtro de indicador + Tipo_Diagnostico = D + Id válido  2) deduplicar  3) clasificar
+  const used=rows.filter(r=>r.id&&r.tipo==='D'&&r.code&&ind.f(r));
+  const pat=new Map();
+  used.forEach(r=>{const p=pat.get(r.id);if(!p)pat.set(r.id,r);else if(!p.age&&r.age)pat.set(r.id,r);});
+  const total=pat.size;
+  const detail=used.map(r=>{
+    const i=ind.segs?getAgeSegment(r.age,ind.segs):-1;
+    return{r,seg:ind.segs?(i>=0?ind.segs[i].l:'Edad inválida'):'—'};
+  });
+  let counts=null,invalid=0;
+  if(ind.segs){
+    counts=ind.segs.map(()=>0);
+    pat.forEach(r=>{const i=getAgeSegment(r.age,ind.segs);if(i>=0)counts[i]++;else invalid++;});
+  }
+  return{ind,used,total,counts,invalid,detail,unique:countUniquePatients(used)};
+}
+function buildAll(rows){
+  rows=applyDateFilter(rows);
+  const R={};IND.forEach(i=>R[i.k]=generateReport(rows,i));
+  return R;
+}
+
+/* ---------- 11. Control de calidad ---------- */
+function buildQC(rows,R){
+  return[
+   ['Registros procesados',rows.length],
+   ['Pacientes únicos identificados',countUniquePatients(rows)],
+   ['Atenciones únicas (Id_Cita)',S.hasCita?countUniqueCitas(rows):'N/D (columna Id_Cita no encontrada)'],
+   ['Registros sin Id_Cita',S.hasCita?rows.filter(r=>!r.cita).length:'N/D'],
+   ['Registros con diagnóstico D',rows.filter(r=>r.tipo==='D').length],
+   ['Registros sin Id_Paciente',rows.filter(r=>!r.id).length],
+   ['Registros con edad inválida',rows.filter(r=>!r.age).length],
+   ['Registros utilizados para IRA',R.ira.used.length],
+   ['Registros utilizados para Asma',R.asma.used.length],
+   ['Registros utilizados para EDA',R.eda.used.length],
+   ['Registros utilizados para Febriles',R.feb.used.length],
+   ['Registros utilizados para Dengue',R.dengue.used.length],
+   ['Registros utilizados para Mordedura Canina',R.dog.used.length]
+  ];
+}
+
+/* ---------- 1. Lectura CSV ---------- */
+function decodeBuffer(buf){
+  try{return new TextDecoder('utf-8',{fatal:true}).decode(buf);}
+  catch(e){return new TextDecoder('windows-1252').decode(buf);}
+}
+function showError(t){document.getElementById('msg').innerHTML=`<div class="err">⚠ ${esc(t)}</div>`;}
+async function handleFile(f){
+  document.getElementById('msg').innerHTML='<div class="card">Procesando...</div>';
+  await new Promise(r=>setTimeout(r,30));
+  try{
+    const text=decodeBuffer(await f.arrayBuffer()).replace(/^\uFEFF/,'');
+    const res=Papa.parse(text,{header:true,skipEmptyLines:'greedy',delimitersToGuess:[',',';','|','\t'],transformHeader:h=>h.trim()});
+    const fields=res.meta.fields||[];
+    const map={};
+    REQ.forEach(q=>{const h=fields.find(x=>x.toLowerCase()===q.toLowerCase());if(h)map[q]=h;});
+    const hc=fields.find(x=>x.toLowerCase()==='id_cita');
+    if(hc)map.Id_Cita=hc;S.hasCita=!!hc;
+    const falta=REQ.filter(q=>!map[q]);
+    if(falta.length||!res.data.length){
+      showError('No se pudo procesar el archivo.\n\n'+(falta.length?'Falta(n) la(s) columna(s):\n'+falta.join('\n'):'El archivo no contiene registros.')+'\n\nVerifique que el CSV contenga las columnas requeridas.');
+      return;
+    }
+    S.file=f.name;S.rows=normalizeRows(res.data,map);S.cols=fields;
+    S.R=buildAll(S.rows);S.qc=buildQC(S.rows,S.R);
+    document.getElementById('msg').innerHTML='';
+    document.getElementById('finfo').innerHTML=
+      `<span><b>Archivo:</b> ${esc(f.name)}</span><span><b>Registros:</b> ${S.rows.length.toLocaleString()}</span><span><b>Pacientes únicos:</b> ${countUniquePatients(S.rows).toLocaleString()}</span><span><b>Atenciones (Id_Cita únicos):</b> ${citaTxt()}</span><span><b>Delimitador:</b> ${esc(res.meta.delimiter==='\t'?'TAB':res.meta.delimiter)}</span><span><b>Columnas (${fields.length}):</b> ${esc(fields.join(', '))}</span>`;
+    buildNav();go('dash');
+  }catch(e){showError('No se pudo procesar el archivo.\n\nVerifique que sea un CSV válido.');console.error(e);}
+}
+
+/* ---------- 8/9. Renderizado ---------- */
+function buildNav(){
+  const items=[['dash','Dashboard'],...IND.map(i=>[i.k,i.nav]),['aten','Atenciones'],['datos','Datos']];
+  document.getElementById('nav').innerHTML=items.map(([k,l])=>`<button data-k="${k}" class="${S.view===k?'on':''}" onclick="go('${k}')">${l}</button>`).join('');
+}
+function go(v){S.view=v;buildNav();renderDashboard();}
+function killCharts(){charts.forEach(c=>c.destroy());charts=[];}
+const valLabels={id:'vl',afterDatasetsDraw(c){const{ctx}=c;c.getDatasetMeta(0).data.forEach((b,i)=>{ctx.save();ctx.fillStyle='#0f172a';ctx.font='bold 12px sans-serif';ctx.textBaseline='middle';ctx.fillText(c.data.datasets[0].data[i],b.x+6,b.y);ctx.restore();});}};
+function barChart(id,labels,vals){
+  charts.push(new Chart(document.getElementById(id),{type:'bar',data:{labels,datasets:[{label:'Pacientes',data:vals,backgroundColor:'#0b4f8a'}]},
+   options:{indexAxis:'y',maintainAspectRatio:false,layout:{padding:{right:40}},plugins:{legend:{display:false}},scales:{x:{beginAtZero:true,ticks:{precision:0},title:{display:true,text:'Número de pacientes'}},y:{title:{display:true,text:'Grupo de edad'}}}},plugins:[valLabels]}));
+}
+const pct=(n,t)=>t?(n*100/t).toFixed(1)+'%':'0.0%';
+function tableHTML(rep){
+  const rows=rep.ind.segs.map((s,i)=>`<tr><td>${esc(s.l)}</td><td class="n">${rep.counts[i]}</td><td class="n">${pct(rep.counts[i],rep.total)}</td></tr>`).join('');
+  const inv=rep.invalid?`<tr><td>Edad inválida / vacía</td><td class="n">${rep.invalid}</td><td class="n">${pct(rep.invalid,rep.total)}</td></tr>`:'';
+  return`<table><thead><tr><th>Segmento</th><th class="n">Pacientes</th><th class="n">%</th></tr></thead><tbody>${rows}${inv}<tr class="tot"><td>TOTAL</td><td class="n">${rep.total}</td><td class="n">${rep.total?'100.0%':'0.0%'}</td></tr></tbody></table>`;
+}
+function qcHTML(){
+  return`<div class="card"><h3 style="margin-top:0">Control de calidad</h3><table><tbody>${S.qc.map(([l,v])=>`<tr><td class="ok">✓ ${l}</td><td class="n"><b>${v.toLocaleString()}</b></td></tr>`).join('')}</tbody></table></div>`;
+}
+function renderDashboard(){
+  killCharts();
+  const v=document.getElementById('view');
+  if(!S.R){v.innerHTML='<div class="card">Cargue un archivo CSV para generar los reportes.</div>';return;}
+  const k=S.view;
+  if(k==='dash'){
+    v.innerHTML=`<div class="grid">${IND.map(i=>`<div class="kpi" onclick="go('${i.k}')"><b>${i.nav.toUpperCase()}</b><span>${S.R[i.k].total.toLocaleString()}</span> <small>pacientes</small></div>`).join('')}<div class="kpi" style="border-left-color:#15803d" onclick="go('aten')"><b>TOTAL DE ATENCIONES</b><span style="color:#15803d">${citaTxt()}</span> <small>citas únicas</small></div></div><br>
+    <div class="card"><canvas id="cdash" height="90"></canvas></div>${qcHTML()}`;
+    charts.push(new Chart(document.getElementById('cdash'),{type:'bar',data:{labels:IND.map(i=>i.nav),datasets:[{label:'Pacientes únicos',data:IND.map(i=>S.R[i.k].total),backgroundColor:'#0b4f8a'}]},options:{plugins:{legend:{display:false},title:{display:true,text:'Pacientes únicos por indicador'}},scales:{y:{beginAtZero:true,ticks:{precision:0}}}}}));
+  }else if(k==='aten'){
+    v.innerHTML=`<div class="card" style="text-align:center"><h2>TOTAL DE ATENCIONES</h2><div class="note">COUNT(DISTINCT Id_Cita)</div><div class="big" style="color:#15803d">${citaTxt()}</div>${S.hasCita?`<p class="note">Registros del archivo: ${S.rows.length.toLocaleString()} · Registros sin Id_Cita: ${S.rows.filter(r=>!r.cita).length.toLocaleString()}<br>Se cuentan citas únicas sobre todo el archivo, sin filtrar por diagnóstico.</p>`:'<p class="bad">⚠ El archivo no contiene la columna Id_Cita.</p>'}</div>`;
+  }else if(k==='datos'){
+    const opts=[['todos','Todos'],...IND.map(i=>[i.k,i.nav])];
+    const det=S.dfilter==='todos'?IND.flatMap(i=>S.R[i.k].detail.map(d=>({...d,ind:i.nav}))):S.R[S.dfilter].detail.map(d=>({...d,ind:IND.find(i=>i.k===S.dfilter).nav}));
+    v.innerHTML=`<div class="card"><h3 style="margin-top:0">Registros utilizados para el cálculo</h3>
+     <p class="noprint">Filtro: <select onchange="S.dfilter=this.value;renderDashboard()">${opts.map(([a,b])=>`<option value="${a}" ${S.dfilter===a?'selected':''}>${b}</option>`).join('')}</select>
+     <span class="note"> ${det.length.toLocaleString()} registros (se muestran los primeros 500)</span></p>
+     <div class="tw"><table><thead><tr><th>Indicador</th><th>Id_Paciente</th><th>Codigo_Item</th><th>Tipo_Diagnostico</th><th>Anio</th><th>Mes</th><th>Dia</th><th>Edad calculada</th><th>Segmento</th></tr></thead><tbody>
+     ${det.slice(0,500).map(d=>`<tr><td>${d.ind}</td><td>${esc(d.r.id)}</td><td>${esc(d.r.code)}</td><td>${esc(d.r.tipo)}</td><td>${esc(d.r.ay)}</td><td>${esc(d.r.am)}</td><td>${esc(d.r.ad)}</td><td>${ageText(d.r.age)}</td><td>${esc(d.seg)}</td></tr>`).join('')}
+     </tbody></table></div></div>`;
+  }else{
+    const rep=S.R[k];
+    if(!rep.ind.segs){
+      v.innerHTML=`<div class="card" style="text-align:center"><h2>${rep.ind.t}</h2><div class="note">TOTAL CASOS DENGUE</div><div class="big">${rep.total.toLocaleString()}</div><div style="max-width:320px;margin:auto"><canvas id="cd"></canvas></div><p class="note">Registros utilizados: ${rep.used.length.toLocaleString()} · Pacientes únicos</p></div>`;
+      const otros=Math.max(countUniquePatients(S.rows)-rep.total,0);
+      charts.push(new Chart(document.getElementById('cd'),{type:'doughnut',data:{labels:['Dengue','Otros pacientes'],datasets:[{data:[rep.total,otros],backgroundColor:['#b91c1c','#cbd5e1']}]}}));
+    }else{
+      v.innerHTML=`<div class="two"><div class="card"><h2 style="margin-top:0">${rep.ind.t}</h2>${tableHTML(rep)}<p class="note">Pacientes únicos (COUNT DISTINCT Id_Paciente). Registros utilizados: ${rep.used.length.toLocaleString()}.</p></div><div class="card" style="height:420px"><canvas id="cb"></canvas></div></div>`;
+      barChart('cb',rep.ind.segs.map(s=>s.l),rep.counts);
+    }
+  }
+}
+
+/* ---------- 10. Exportación ---------- */
+function reportRows(rep){
+  if(!rep.ind.segs)return[['TOTAL CASOS DENGUE',rep.total]];
+  const a=[['Segmento','Pacientes','%']];
+  rep.ind.segs.forEach((s,i)=>a.push([s.l,rep.counts[i],pct(rep.counts[i],rep.total)]));
+  if(rep.invalid)a.push(['Edad inválida / vacía',rep.invalid,pct(rep.invalid,rep.total)]);
+  a.push(['TOTAL',rep.total,rep.total?'100.0%':'0.0%']);return a;
+}
+function needData(){if(!S.R){showError('No hay datos cargados.\n\nCargue un archivo CSV primero.');return false;}return true;}
+function exportExcel(){
+  if(!needData())return;
+  const wb=XLSX.utils.book_new();
+  const add=(n,a)=>XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(a),n);
+  add('Resumen',[['Indicador','Pacientes únicos'],...IND.map(i=>[i.nav,S.R[i.k].total]),['Total de atenciones (Id_Cita únicos)',S.hasCita?countUniqueCitas(S.rows):'N/D']]);
+  const names={ira:'IRA',asma:'Asma',eda:'EDA',feb:'Febriles',dengue:'Dengue',dog:'Mordedura_Canina'};
+  IND.forEach(i=>add(names[i.k],reportRows(S.R[i.k])));
+  add('Control_Calidad',[['Control','Valor'],...S.qc]);
+  XLSX.writeFile(wb,'Reporte_Epidemiologico.xlsx');
+}
+function exportCSV(){
+  if(!needData())return;
+  const rep=S.R[S.view];
+  const a=rep?reportRows(rep):[['Indicador','Pacientes únicos'],...IND.map(i=>[i.nav,S.R[i.k].total]),['Total de atenciones (Id_Cita únicos)',S.hasCita?countUniqueCitas(S.rows):'N/D']];
+  const blob=new Blob(['\uFEFF'+Papa.unparse(a)],{type:'text/csv;charset=utf-8'});
+  const l=document.createElement('a');l.href=URL.createObjectURL(blob);l.download=(rep?rep.ind.nav:'Resumen')+'.csv';l.click();
+}
+
+/* ---------- Prueba automática con datos ficticios ---------- */
+function runTests(){
+  const id={};REQ.forEach(q=>id[q]=q);
+  const mk=(a,c,t,y,m,d)=>({Id_Paciente:a,Codigo_Item:c,Tipo_Diagnostico:t,Anio_Actual_Paciente:y,Mes_Actual_Paciente:m,Dia_Actual_Paciente:d});
+  const rows=normalizeRows([
+   mk('APP001','J069','D',0,1,10),mk('APP001','J069','D',0,1,10),mk('APP002','J069','D',3,2,10),
+   mk('APP003','J456','D',2,0,5),mk('APP003','J456','D',2,0,5),mk('APP004','A09X','D',1,2,10),
+   mk('APP005','R509','D',8,0,10),mk('APP006','A970','D',25,0,0),mk('APP007','W540','D',4,0,0),
+   mk('','J069','D',5,0,0),mk(' app008 ','j069',' d ',0,2,0),mk('APP009','J069','P',1,0,0),mk('APP010','J069','D','x',1,1)
+  ],id);
+  const R=buildAll(rows);
+  const seg=(y,m,d,k)=>getAgeSegment(calculateAge(y,m,d),SEG[k]);
+  const T=[
+   ['IRA cuenta pacientes únicos (APP001 duplicado)',R.ira.total===4&&R.ira.unique===4],
+   ['IRA: 0a1m10d y 0a1m29d → Menor 2 meses',R.ira.counts[0]===1&&seg(0,1,29,'ira')===0],
+   ['IRA: 0a2m0d → De 2-11 meses (APP008 normalizado)',seg(0,2,0,'ira')===1&&R.ira.counts[1]===1],
+   ['IRA: 1a0m0d → De 1-4 años',seg(1,0,0,'ira')===2],
+   ['IRA: sin Id, Tipo P y edad inválida se tratan correctamente',R.ira.invalid===1&&R.ira.total===4],
+   ['IRA excluye J456',R.ira.used.every(r=>r.code!=='J456')],
+   ['Asma: APP003 duplicado cuenta 1, 2 años → (1-4)',R.asma.total===1&&R.asma.counts[1]===1],
+   ['Asma: límites 1a11m→(0-1), 2a0m→(1-4), 5a→(5+)',seg(1,11,0,'asma')===0&&seg(2,0,0,'asma')===1&&seg(5,0,0,'asma')===2],
+   ['EDA: APP004 (1a) → De 1-4 Años',R.eda.total===1&&R.eda.counts[1]===1],
+   ['Febriles: APP005 (8a) → 5-9 años',R.feb.total===1&&R.feb.counts[2]===1],
+   ['Dengue: A970 → 1 caso, sin segmentar',R.dengue.total===1&&R.dengue.counts===null],
+   ['Mordedura canina: W540 (4a) → 1-4 años',R.dog.total===1&&R.dog.counts[1]===1],
+   ['Atenciones: Id_Cita repetido cuenta 1; vacío/NULL no cuentan',countUniqueCitas(normalizeRows([{Id_Cita:'C1'},{Id_Cita:'C1'},{Id_Cita:'C2'},{Id_Cita:' '},{Id_Cita:'NULL'}],{Id_Cita:'Id_Cita'}))===2],
+   ['Cada indicador: suma de grupos = total',IND.filter(i=>i.segs).every(i=>R[i.k].counts.reduce((a,b)=>a+b,0)+R[i.k].invalid===R[i.k].total)]
+  ];
+  const okAll=T.every(t=>t[1]);
+  document.getElementById('test').innerHTML=`<div class="card"><h3 style="margin-top:0" class="${okAll?'ok':'bad'}">Prueba del sistema: ${okAll?'TODAS LAS PRUEBAS CORRECTAS':'HAY PRUEBAS FALLIDAS'}</h3>${T.map(t=>`<div class="${t[1]?'ok':'bad'}">${t[1]?'✓':'✗'} ${t[0]}</div>`).join('')}</div>`;
+}
+
+/* ---------- Eventos de carga ---------- */
+const fi=document.getElementById('fi'),drop=document.getElementById('drop');
+fi.onchange=e=>{if(e.target.files[0])handleFile(e.target.files[0]);fi.value='';};
+drop.onclick=()=>fi.click();
+['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('over');}));
+['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('over');}));
+drop.addEventListener('drop',e=>{if(e.dataTransfer.files[0])handleFile(e.dataTransfer.files[0]);});
+</script>
+</body>
+</html>
